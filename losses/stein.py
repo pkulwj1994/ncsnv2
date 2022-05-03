@@ -42,7 +42,7 @@ def stein_stats(logp, x, critic, approx_jcb=True, n_samples=1):
     grad_norms = (sq * sq).mean([-1,-2,-3])
     return stats, norms, grad_norms, lp
 
-def annealed_stein_stats_withscore(basescore,resscore, samples,sigmas,labels=None, approx_jcb=True, n_particles=1):
+def annealed_stein_stats_withscore(basescore,resscore, samples,sigmas,labels=None, n_particles=1):
     used_sigmas = sigmas[labels].view(samples.shape[0], *([1] * len(samples.shape[1:])))
     perturbed_samples = samples + torch.randn_like(samples) * used_sigmas
     dup_samples = perturbed_samples.unsqueeze(0).expand(n_particles, *samples.shape).contiguous().view(-1,*samples.shape[1:])
