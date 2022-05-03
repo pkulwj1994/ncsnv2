@@ -9,16 +9,17 @@ import torch
 import os
 from torchvision.utils import make_grid, save_image
 from torch.utils.data import DataLoader
-from models.ncsnv2 import NCSNv2Deeper, NCSNv2, NCSNv2Deepest
+from models.ncsnv2 import NCSNv2Deeper, NCSNv2, NCSNv2Deepest, init_net
 from models.ncsn import NCSN, NCSNdeeper
 from datasets import get_dataset, data_transform, inverse_data_transform
 from losses import get_optimizer
-from models import (anneal_Langevin_dynamics,
-                    anneal_Langevin_dynamics_inpainting,
-                    anneal_Langevin_dynamics_interpolation)
+from models import anneal_Langevin_dynamics, anneal_Langevin_caliberation, anneal_Langevin_dynamics_inpainting, anneal_Langevin_dynamics_interpolation
 from models import get_sigmas
 from models.ema import EMAHelper
 from losses.stein import annealed_ssc
+
+import matplotlib.pyplot as plt
+from PIL import Image
 
 
 __all__ = ['ScoreCorrectRunner']
@@ -63,12 +64,13 @@ class ScoreCorrectRunner():
 
         ## initialize score
         score = get_model(self.config)
-
         score = torch.nn.DataParallel(score)
+        score = init_net(score)
         optimizer = get_optimizer(self.config, score.parameters())
+        print('res score initialized')
 
         start_epoch = 0
-        step = 0
+        step = -1
 
         if self.config.model.ema:
             ema_helper = EMAHelper(mu=self.config.model.ema_rate)
@@ -123,7 +125,7 @@ class ScoreCorrectRunner():
 
             def test_tb_hook():
                 pass
-
+        lossess = []
         for epoch in range(start_epoch, self.config.training.n_epochs):
             for i, (X, y) in enumerate(dataloader):
                 score.train()
@@ -154,31 +156,8 @@ class ScoreCorrectRunner():
                 if step >= self.config.training.n_iters:
                     return 0
 
-                if step % 100 == 0:
-                    if self.config.model.ema:
-                        test_score = ema_helper.ema_copy(score)
-                    else:
-                        test_score = score
+                lossess.append(loss.item)
 
-                    test_score.eval()
-                    try:
-                        test_X, test_y = next(test_iter)
-                    except StopIteration:
-                        test_iter = iter(test_loader)
-                        test_X, test_y = next(test_iter)
-
-                    test_X = test_X.to(self.config.device)
-                    test_X = data_transform(self.config, test_X)
-
-                    with torch.no_grad():
-                        test_dsm_loss = anneal_dsm_score_estimation(test_score, test_X, sigmas, None,
-                                                                    self.config.training.anneal_power,
-                                                                    hook=test_hook)
-                        tb_logger.add_scalar('test_loss', test_dsm_loss, global_step=step)
-                        test_tb_hook()
-                        logging.info("step: {}, test_loss: {}".format(step, test_dsm_loss.item()))
-
-                        del test_score
 
                 if step % self.config.training.snapshot_freq == 0:
                     states = [
@@ -191,7 +170,7 @@ class ScoreCorrectRunner():
                         states.append(ema_helper.state_dict())
 
                     # torch.save(states, os.path.join(self.args.log_path, 'checkpoint_{}.pth'.format(step)))
-                    # torch.save(states, os.path.join(self.args.log_path, 'checkpoint.pth'))
+                    torch.save(states, os.path.join(self.args.log_path, 'checkpoint.pth'))
 
                     if self.config.training.snapshot_sampling:
                         if self.config.model.ema:
@@ -208,12 +187,13 @@ class ScoreCorrectRunner():
                                                   device=self.config.device)
                         init_samples = data_transform(self.config, init_samples)
 
-                        all_samples = anneal_Langevin_dynamics(init_samples, test_score, sigmas.cpu().numpy(),
+                        all_samples = anneal_Langevin_caliberation(init_samples,basescore, test_score, sigmas.cpu().numpy(), self.config.training.lam,
                                                                self.config.sampling.n_steps_each,
                                                                self.config.sampling.step_lr,
-                                                               final_only=True, verbose=True,
+                                                               final_only=False, verbose=True,
                                                                denoise=self.config.sampling.denoise)
 
+                        # making last sample
                         sample = all_samples[-1].view(all_samples[-1].shape[0], self.config.data.channels,
                                                       self.config.data.image_size,
                                                       self.config.data.image_size)
@@ -221,10 +201,25 @@ class ScoreCorrectRunner():
                         sample = inverse_data_transform(self.config, sample)
 
                         image_grid = make_grid(sample, 6)
-                        save_image(image_grid,
-                                   os.path.join(self.args.log_sample_path, 'image_grid_{}.png'.format(step)))
+                        save_image(image_grid,os.path.join(self.args.log_sample_path, 'image_grid_{}.png'.format(step)))
                         torch.save(sample, os.path.join(self.args.log_sample_path, 'samples_{}.pth'.format(step)))
 
+                        # making gif
+                        imgs = []
+                        for i, sample in enumerate(tqdm.tqdm(all_samples, total=len(all_samples), desc='saving images')):
+                            if i%10 == 0:
+                              sample = sample.view(sample.shape[0], self.config.data.channels, self.config.data.image_size,
+                                                  self.config.data.image_size)
+                              sample = inverse_data_transform(self.config, sample)
+
+                              image_grid = make_grid(sample, nrow=int(np.sqrt(sample.shape[0])))
+                              im = Image.fromarray(image_grid.mul_(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy())
+                              imgs.append(im)
+                            else:
+                              pass
+                        imgs[0].save(os.path.join(self.args.log_sample_path, "{}_movie.gif".format(step)), save_all=True, append_images=imgs[1:], duration=1, loop=0)
+
+                        del imgs
                         del test_score
                         del all_samples
 
