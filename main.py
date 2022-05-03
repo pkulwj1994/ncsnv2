@@ -177,7 +177,8 @@ def main():
     print("<" * 80)
 
     try:
-        runner = NCSNRunner(args, config)
+        # runner = NCSNRunner(args, config)
+        runner = ScoreCorrectRunner(args, config)
         if args.test:
             runner.test()
         elif args.sample:
