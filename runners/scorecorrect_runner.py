@@ -67,7 +67,6 @@ class ScoreCorrectRunner():
         score = torch.nn.DataParallel(score)
         score = init_net(score)
         optimizer = get_optimizer(self.config, score.parameters())
-        print('res score initialized')
 
         start_epoch = 0
         step = -1
