@@ -53,7 +53,7 @@ class ScoreCorrectRunner():
         ## load base score
         basescore = get_model(self.config)
         basescore = torch.nn.DataParallel(basescore)
-        states = torch.load(os.path.join("exp/cifar10/mnist", 'checkpoint_300000.pth'), map_location=self.config.device)
+        states = torch.load(os.path.join("exp/logs/cifar10", 'checkpoint_300000.pth'), map_location=self.config.device)
         basescore.load_state_dict(states[0])
         for p in basescore.parameters():
             p.requires_grad_(False)
