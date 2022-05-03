@@ -18,7 +18,7 @@ from models import (anneal_Langevin_dynamics,
                     anneal_Langevin_dynamics_interpolation)
 from models import get_sigmas
 from models.ema import EMAHelper
-from losses.stein import annealed_stein_stats_withscore
+from losses.stein import annealed_ssc
 
 
 __all__ = ['ScoreCorrectRunner']
@@ -131,10 +131,14 @@ class ScoreCorrectRunner():
 
                 X = X.to(self.config.device)
                 X = data_transform(self.config, X)
+                
+                if self.config.training.algo == 'dsc':
+                    total_score = lambda X,labels: basescore(X,labels).detach() - score(X,labels)/self.config.lam
+                    loss = anneal_dsm_score_estimation(total_score, X, sigmas, None, self.config.training.anneal_power,hook)
+                elif self.config.training.algo == 'ssc':
+                    loss = annealed_ssc(basescore, score, X, sigmas, labels=None, lam=self.config.training.lam, self.config.training.anneal_power, hook, n_particles=1)
 
-                loss = anneal_dsm_score_estimation(score, X, sigmas, None,
-                                                   self.config.training.anneal_power,
-                                                   hook)
+                                              
                 tb_logger.add_scalar('loss', loss, global_step=step)
                 tb_hook()
 
@@ -186,8 +190,8 @@ class ScoreCorrectRunner():
                     if self.config.model.ema:
                         states.append(ema_helper.state_dict())
 
-                    torch.save(states, os.path.join(self.args.log_path, 'checkpoint_{}.pth'.format(step)))
-                    torch.save(states, os.path.join(self.args.log_path, 'checkpoint.pth'))
+                    # torch.save(states, os.path.join(self.args.log_path, 'checkpoint_{}.pth'.format(step)))
+                    # torch.save(states, os.path.join(self.args.log_path, 'checkpoint.pth'))
 
                     if self.config.training.snapshot_sampling:
                         if self.config.model.ema:
