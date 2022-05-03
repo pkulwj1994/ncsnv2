@@ -133,10 +133,10 @@ class ScoreCorrectRunner():
                 X = data_transform(self.config, X)
                 
                 if self.config.training.algo == 'dsc':
-                    total_score = lambda X,labels: basescore(X,labels).detach() - score(X,labels)/self.config.lam
+                    total_score = lambda X,labels: basescore(X,labels).detach() - score(X,labels)/self.config.training.lam
                     loss = anneal_dsm_score_estimation(total_score, X, sigmas, None, self.config.training.anneal_power,hook)
                 elif self.config.training.algo == 'ssc':
-                    loss = annealed_ssc(basescore, score, X, sigmas, labels=None, lam=self.config.training.lam, self.config.training.anneal_power, hook, n_particles=1)
+                    loss = annealed_ssc(basescore, score, X, sigmas, labels=None, lam=self.config.training.lam, anneal_power=self.config.training.anneal_power, hook=hook, n_particles=1)
 
                                               
                 tb_logger.add_scalar('loss', loss, global_step=step)
