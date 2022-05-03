@@ -50,10 +50,6 @@ def annealed_stein_stats_withscore(basescore,resscore, samples,sigmas,labels=Non
     dup_samples.requires_grad_(True)
     
     # use Rademacher
-
-    fx = resscore(dup_samples,dup_labels)
-    sq_fx = (sq * fx).mean([-1,-2,-3])
-
 #     if approx_jcb==False:
 #         tr_dfdx = exact_jacobian_trace(fx, samples)
 #     else:
@@ -77,4 +73,4 @@ def annealed_stein_stats_withscore(basescore,resscore, samples,sigmas,labels=Non
     tr_dfdx = tr_dfdx.view(n_particles, -1).mean(dim=0).mean(dim=0)
     
     stats = sq_fx + tr_dfdx
-    return stats, norms2
+    return stats, norm2
