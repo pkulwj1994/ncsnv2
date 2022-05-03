@@ -43,6 +43,8 @@ def stein_stats(logp, x, critic, approx_jcb=True, n_samples=1):
     return stats, norms, grad_norms, lp
 
 def annealed_ssc(basescore,resscore, samples,sigmas, labels=None, lam=1.0, anneal_power=2.0, hook=None, n_particles=1):
+    if labels is None:
+        labels = torch.randint(0, len(sigmas), (samples.shape[0],), device=samples.device)
     used_sigmas = sigmas[labels].view(samples.shape[0], *([1] * len(samples.shape[1:])))
     perturbed_samples = samples + torch.randn_like(samples) * used_sigmas
     dup_samples = perturbed_samples.unsqueeze(0).expand(n_particles, *samples.shape).contiguous().view(-1,*samples.shape[1:])
