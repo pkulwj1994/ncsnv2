@@ -18,8 +18,10 @@ from models import (anneal_Langevin_dynamics,
                     anneal_Langevin_dynamics_interpolation)
 from models import get_sigmas
 from models.ema import EMAHelper
+from losses.stein import annealed_stein_stats_withscore
 
-__all__ = ['NCSNRunner']
+
+__all__ = ['ScoreCorrectRunner']
 
 
 def get_model(config):
@@ -30,7 +32,7 @@ def get_model(config):
     elif config.data.dataset == 'LSUN':
         return NCSNv2Deeper(config).to(config.device)
 
-class NCSNRunner():
+class ScoreCorrectRunner():
     def __init__(self, args, config):
         self.args = args
         self.config = config
@@ -48,6 +50,18 @@ class NCSNRunner():
 
         tb_logger = self.config.tb_logger
 
+        ## load base score
+        basescore = get_model(self.config)
+        basescore = torch.nn.DataParallel(basescore)
+        states = torch.load(os.path.join("exp/cifar10/mnist", 'checkpoint_300000.pth'), map_location=self.config.device)
+        basescore.load_state_dict(states[0])
+        for p in basescore.parameters():
+            p.requires_grad_(False)
+        basescore.eval()
+        print(" base score loaded")
+
+
+        ## initialize score
         score = get_model(self.config)
 
         score = torch.nn.DataParallel(score)
