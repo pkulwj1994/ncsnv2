@@ -42,7 +42,7 @@ def stein_stats(logp, x, critic, approx_jcb=True, n_samples=1):
     grad_norms = (sq * sq).mean([-1,-2,-3])
     return stats, norms, grad_norms, lp
 
-def annealed_stein_stats_withscore(basescore,resscore, samples,sigmas,labels=None, n_particles=1):
+def annealed_ssc(basescore,resscore, samples,sigmas, labels=None, lam=1.0, anneal_power=2.0, hook=None, n_particles=1):
     used_sigmas = sigmas[labels].view(samples.shape[0], *([1] * len(samples.shape[1:])))
     perturbed_samples = samples + torch.randn_like(samples) * used_sigmas
     dup_samples = perturbed_samples.unsqueeze(0).expand(n_particles, *samples.shape).contiguous().view(-1,*samples.shape[1:])
@@ -68,9 +68,11 @@ def annealed_stein_stats_withscore(basescore,resscore, samples,sigmas,labels=Non
     tr_dfdx = torch.mean((vectors * grad2).view(dup_samples.shape[0], -1), dim=-1)
     
     
-    sq_fx = sq_fx.view(n_particles, -1).mean(dim=0).mean(dim=0)
-    norm2 = norm2.view(n_particles, -1).mean(dim=0).mean(dim=0)
-    tr_dfdx = tr_dfdx.view(n_particles, -1).mean(dim=0).mean(dim=0)
+    sq_fx = sq_fx.view(n_particles, -1).mean(dim=0)
+    norm2 = norm2.view(n_particles, -1).mean(dim=0)
+    tr_dfdx = tr_dfdx.view(n_particles, -1).mean(dim=0)
+
+    loss = (-1.0*(sq_fx + tr_dfdx) + 0.5*norm2/lam)/lam
+    loss = loss * (used_sigmas.squeeze() ** 2)
     
-    stats = sq_fx + tr_dfdx
-    return stats, norm2
+    return loss.mean(dim=0)
