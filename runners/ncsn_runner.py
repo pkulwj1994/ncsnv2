@@ -9,17 +9,20 @@ import torch
 import os
 from torchvision.utils import make_grid, save_image
 from torch.utils.data import DataLoader
-from models.ncsnv2 import NCSNv2Deeper, NCSNv2, NCSNv2Deepest
+from models.ncsnv2 import NCSNv2Deeper, NCSNv2, NCSNv2Deepest, init_net
 from models.ncsn import NCSN, NCSNdeeper
 from datasets import get_dataset, data_transform, inverse_data_transform
 from losses import get_optimizer
-from models import (anneal_Langevin_dynamics,
-                    anneal_Langevin_dynamics_inpainting,
-                    anneal_Langevin_dynamics_interpolation)
+from models import anneal_Langevin_dynamics, anneal_Langevin_caliberation, anneal_Langevin_dynamics_inpainting, anneal_Langevin_dynamics_interpolation
 from models import get_sigmas
 from models.ema import EMAHelper
+from losses.stein import annealed_ssc
 
-__all__ = ['NCSNRunner']
+import matplotlib.pyplot as plt
+from PIL import Image
+
+
+__all__ = ['ScoreCorrectRunner']
 
 
 def get_model(config):
@@ -30,7 +33,7 @@ def get_model(config):
     elif config.data.dataset == 'LSUN':
         return NCSNv2Deeper(config).to(config.device)
 
-class NCSNRunner():
+class ScoreCorrectRunner():
     def __init__(self, args, config):
         self.args = args
         self.config = config
@@ -48,13 +51,29 @@ class NCSNRunner():
 
         tb_logger = self.config.tb_logger
 
-        score = get_model(self.config)
+        ## load base score
+        basescore = get_model(self.config)
+        basescore = torch.nn.DataParallel(basescore)
+        states = torch.load(os.path.join("exp/logs/cifar10", 'checkpoint_300000.pth'), map_location=self.config.device)
+        basescore.load_state_dict(states[0])
+        for p in basescore.parameters():
+            p.requires_grad_(False)
+        basescore.eval()
+        print(" base score loaded")
 
+
+        ## initialize score
+        score = get_model(self.config)
         score = torch.nn.DataParallel(score)
+        if self.config.training.zero_init:
+            score = init_net(score,'zero')
+            print('score zero initialized')
+
+
         optimizer = get_optimizer(self.config, score.parameters())
 
         start_epoch = 0
-        step = 0
+        step = -1
 
         if self.config.model.ema:
             ema_helper = EMAHelper(mu=self.config.model.ema_rate)
@@ -109,7 +128,7 @@ class NCSNRunner():
 
             def test_tb_hook():
                 pass
-
+        lossess = []
         for epoch in range(start_epoch, self.config.training.n_epochs):
             for i, (X, y) in enumerate(dataloader):
                 score.train()
@@ -117,10 +136,14 @@ class NCSNRunner():
 
                 X = X.to(self.config.device)
                 X = data_transform(self.config, X)
+                
+                if self.config.training.algo == 'dsc':
+                    total_score = lambda X,labels: basescore(X,labels).detach() - score(X,labels)/self.config.training.lam
+                    loss = anneal_dsm_score_estimation(total_score, X, sigmas, None, self.config.training.anneal_power,hook)
+                elif self.config.training.algo == 'ssc':
+                    loss = annealed_ssc(basescore, score, X, sigmas, labels=None, lam=self.config.training.lam, anneal_power=self.config.training.anneal_power, hook=hook, n_particles=1)
 
-                loss = anneal_dsm_score_estimation(score, X, sigmas, None,
-                                                   self.config.training.anneal_power,
-                                                   hook)
+                                              
                 tb_logger.add_scalar('loss', loss, global_step=step)
                 tb_hook()
 
@@ -128,7 +151,8 @@ class NCSNRunner():
 
                 optimizer.zero_grad()
                 loss.backward()
-                optimizer.step()
+                if step >0:
+                    optimizer.step()
 
                 if self.config.model.ema:
                     ema_helper.update(score)
@@ -136,31 +160,8 @@ class NCSNRunner():
                 if step >= self.config.training.n_iters:
                     return 0
 
-                if step % 100 == 0:
-                    if self.config.model.ema:
-                        test_score = ema_helper.ema_copy(score)
-                    else:
-                        test_score = score
+                lossess.append(loss.item)
 
-                    test_score.eval()
-                    try:
-                        test_X, test_y = next(test_iter)
-                    except StopIteration:
-                        test_iter = iter(test_loader)
-                        test_X, test_y = next(test_iter)
-
-                    test_X = test_X.to(self.config.device)
-                    test_X = data_transform(self.config, test_X)
-
-                    with torch.no_grad():
-                        test_dsm_loss = anneal_dsm_score_estimation(test_score, test_X, sigmas, None,
-                                                                    self.config.training.anneal_power,
-                                                                    hook=test_hook)
-                        tb_logger.add_scalar('test_loss', test_dsm_loss, global_step=step)
-                        test_tb_hook()
-                        logging.info("step: {}, test_loss: {}".format(step, test_dsm_loss.item()))
-
-                        del test_score
 
                 if step % self.config.training.snapshot_freq == 0:
                     states = [
@@ -190,12 +191,13 @@ class NCSNRunner():
                                                   device=self.config.device)
                         init_samples = data_transform(self.config, init_samples)
 
-                        all_samples = anneal_Langevin_dynamics(init_samples, test_score, sigmas.cpu().numpy(),
+                        all_samples = anneal_Langevin_caliberation(init_samples,basescore, test_score, sigmas, self.config.training.lam,
                                                                self.config.sampling.n_steps_each,
                                                                self.config.sampling.step_lr,
-                                                               final_only=True, verbose=True,
+                                                               final_only=False, verbose=True,
                                                                denoise=self.config.sampling.denoise)
 
+                        # making last sample
                         sample = all_samples[-1].view(all_samples[-1].shape[0], self.config.data.channels,
                                                       self.config.data.image_size,
                                                       self.config.data.image_size)
@@ -203,14 +205,44 @@ class NCSNRunner():
                         sample = inverse_data_transform(self.config, sample)
 
                         image_grid = make_grid(sample, 6)
-                        save_image(image_grid,
-                                   os.path.join(self.args.log_sample_path, 'image_grid_{}.png'.format(step)))
+                        save_image(image_grid,os.path.join(self.args.log_sample_path, 'image_grid_{}.png'.format(step)))
                         torch.save(sample, os.path.join(self.args.log_sample_path, 'samples_{}.pth'.format(step)))
 
+                        plt.plot(losses)
+                        plt.savefig(os.path.join(self.args.log_sample_path, 'losses_{}_{}.pth'.format(self.config.data.dataset, self.config.training.algo)))
+
+                        # making gif
+                        imgs = []
+                        for i, sample in enumerate(tqdm.tqdm(all_samples, total=len(all_samples), desc='saving images')):
+                            if i%10 == 0:
+                              sample = sample.view(sample.shape[0], self.config.data.channels, self.config.data.image_size,
+                                                  self.config.data.image_size)
+                              sample = inverse_data_transform(self.config, sample)
+
+                              image_grid = make_grid(sample, nrow=int(np.sqrt(sample.shape[0])))
+                              im = Image.fromarray(image_grid.mul_(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy())
+                              imgs.append(im)
+                            else:
+                              pass
+                        imgs[0].save(os.path.join(self.args.log_sample_path, "{}_movie.gif".format(step)), save_all=True, append_images=imgs[1:], duration=1, loop=0)
+
+                        del imgs
                         del test_score
                         del all_samples
 
     def sample(self):
+
+        ## load base score
+        basescore = get_model(self.config)
+        basescore = torch.nn.DataParallel(basescore)
+        states = torch.load(os.path.join("exp/logs/cifar10", 'checkpoint_300000.pth'), map_location=self.config.device)
+        basescore.load_state_dict(states[0])
+        for p in basescore.parameters():
+            p.requires_grad_(False)
+        basescore.eval()
+        print(" base score loaded")
+
+
         if self.config.sampling.ckpt_id is None:
             states = torch.load(os.path.join(self.args.log_path, 'checkpoint.pth'), map_location=self.config.device)
         else:
@@ -343,11 +375,11 @@ class NCSNRunner():
                                               device=self.config.device)
                     init_samples = data_transform(self.config, init_samples)
 
-                all_samples = anneal_Langevin_dynamics(init_samples, score, sigmas,
-                                                       self.config.sampling.n_steps_each,
-                                                       self.config.sampling.step_lr, verbose=True,
-                                                       final_only=self.config.sampling.final_only,
-                                                       denoise=self.config.sampling.denoise)
+                all_samples = anneal_Langevin_caliberation(init_samples,basescore, score, sigmas, self.config.training.lam,
+                                                        self.config.sampling.n_steps_each,
+                                                        self.config.sampling.step_lr,
+                                                        final_only=False, verbose=True,
+                                                        denoise=self.config.sampling.denoise)
 
                 if not self.config.sampling.final_only:
                     for i, sample in tqdm.tqdm(enumerate(all_samples), total=len(all_samples),
@@ -399,10 +431,11 @@ class NCSNRunner():
                                          self.config.data.image_size, device=self.config.device)
                     samples = data_transform(self.config, samples)
 
-                all_samples = anneal_Langevin_dynamics(samples, score, sigmas,
-                                                       self.config.sampling.n_steps_each,
-                                                       self.config.sampling.step_lr, verbose=False,
-                                                       denoise=self.config.sampling.denoise)
+                all_samples = anneal_Langevin_caliberation(samples,basescore, score, sigmas.cpu().numpy(), self.config.training.lam,
+                                                        self.config.sampling.n_steps_each,
+                                                        self.config.sampling.step_lr,
+                                                        final_only=False, verbose=False,
+                                                        denoise=self.config.sampling.denoise)
 
                 samples = all_samples[-1]
                 for img in samples:
@@ -464,6 +497,18 @@ class NCSNRunner():
             ))
 
     def fast_fid(self):
+
+        ## load base score
+        basescore = get_model(self.config)
+        basescore = torch.nn.DataParallel(basescore)
+        states = torch.load(os.path.join("exp/logs/cifar10", 'checkpoint_300000.pth'), map_location=self.config.device)
+        basescore.load_state_dict(states[0])
+        for p in basescore.parameters():
+            p.requires_grad_(False)
+        basescore.eval()
+        print(" base score loaded")
+
+
         ### Test the fids of ensembled checkpoints.
         ### Shouldn't be used for models with ema
         if self.config.fast_fid.ensemble:
@@ -499,17 +544,18 @@ class NCSNRunner():
             num_iters = self.config.fast_fid.num_samples // self.config.fast_fid.batch_size
             output_path = os.path.join(self.args.image_folder, 'ckpt_{}'.format(ckpt))
             os.makedirs(output_path, exist_ok=True)
-            for i in range(num_iters):
+            for i in tqdm.tqdm(range(num_iters)):
                 init_samples = torch.rand(self.config.fast_fid.batch_size, self.config.data.channels,
                                           self.config.data.image_size, self.config.data.image_size,
                                           device=self.config.device)
                 init_samples = data_transform(self.config, init_samples)
 
-                all_samples = anneal_Langevin_dynamics(init_samples, score, sigmas,
-                                                       self.config.fast_fid.n_steps_each,
-                                                       self.config.fast_fid.step_lr,
-                                                       verbose=self.config.fast_fid.verbose,
-                                                       denoise=self.config.sampling.denoise)
+                all_samples = anneal_Langevin_caliberation(init_samples,basescore, score, sigmas, self.config.training.lam,
+                                                        self.config.sampling.n_steps_each,
+                                                        self.config.sampling.step_lr,
+                                                        final_only=False, verbose=False,
+                                                        denoise=self.config.sampling.denoise)
+
 
                 final_samples = all_samples[-1]
                 for id, sample in enumerate(final_samples):
@@ -530,6 +576,18 @@ class NCSNRunner():
             pickle.dump(fids, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     def fast_ensemble_fid(self):
+
+        ## load base score
+        basescore = get_model(self.config)
+        basescore = torch.nn.DataParallel(basescore)
+        states = torch.load(os.path.join("exp/logs/cifar10", 'checkpoint_300000.pth'), map_location=self.config.device)
+        basescore.load_state_dict(states[0])
+        for p in basescore.parameters():
+            p.requires_grad_(False)
+        basescore.eval()
+        print(" base score loaded")
+
+
         from evaluation.fid_score import get_fid, get_fid_stats_path
         import pickle
 
@@ -565,11 +623,11 @@ class NCSNRunner():
                                           device=self.config.device)
                 init_samples = data_transform(self.config, init_samples)
 
-                all_samples = anneal_Langevin_dynamics(init_samples, scorenet, sigmas,
-                                                       self.config.fast_fid.n_steps_each,
-                                                       self.config.fast_fid.step_lr,
-                                                       verbose=self.config.fast_fid.verbose,
-                                                       denoise=self.config.sampling.denoise)
+                all_samples = anneal_Langevin_caliberation(init_samples,basescore, scorenet, sigmas, self.config.training.lam,
+                                                        self.config.sampling.n_steps_each,
+                                                        self.config.sampling.step_lr,
+                                                        final_only=False, verbose=False,
+                                                        denoise=self.config.sampling.denoise)
 
                 final_samples = all_samples[-1]
                 for id, sample in enumerate(final_samples):
