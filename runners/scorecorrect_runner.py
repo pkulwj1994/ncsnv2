@@ -208,6 +208,9 @@ class ScoreCorrectRunner():
                         save_image(image_grid,os.path.join(self.args.log_sample_path, 'image_grid_{}.png'.format(step)))
                         torch.save(sample, os.path.join(self.args.log_sample_path, 'samples_{}.pth'.format(step)))
 
+                        plt.plot(losses)
+                        plt.savefig(os.path.join(self.args.log_sample_path, 'losses_{}_{}.pth'.format(self.config.data.dataset, self.config.training.algo)))
+
                         # making gif
                         imgs = []
                         for i, sample in enumerate(tqdm.tqdm(all_samples, total=len(all_samples), desc='saving images')):
@@ -431,7 +434,7 @@ class ScoreCorrectRunner():
                 all_samples = anneal_Langevin_caliberation(samples,basescore, score, sigmas.cpu().numpy(), self.config.training.lam,
                                                         self.config.sampling.n_steps_each,
                                                         self.config.sampling.step_lr,
-                                                        final_only=False, verbose=True,
+                                                        final_only=False, verbose=False,
                                                         denoise=self.config.sampling.denoise)
 
                 samples = all_samples[-1]
@@ -550,7 +553,7 @@ class ScoreCorrectRunner():
                 all_samples = anneal_Langevin_caliberation(init_samples,basescore, score, sigmas, self.config.training.lam,
                                                         self.config.sampling.n_steps_each,
                                                         self.config.sampling.step_lr,
-                                                        final_only=False, verbose=True,
+                                                        final_only=False, verbose=False,
                                                         denoise=self.config.sampling.denoise)
 
 
@@ -623,7 +626,7 @@ class ScoreCorrectRunner():
                 all_samples = anneal_Langevin_caliberation(init_samples,basescore, scorenet, sigmas, self.config.training.lam,
                                                         self.config.sampling.n_steps_each,
                                                         self.config.sampling.step_lr,
-                                                        final_only=False, verbose=True,
+                                                        final_only=False, verbose=False,
                                                         denoise=self.config.sampling.denoise)
 
                 final_samples = all_samples[-1]
