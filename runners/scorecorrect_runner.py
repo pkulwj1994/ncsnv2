@@ -65,7 +65,11 @@ class ScoreCorrectRunner():
         ## initialize score
         score = get_model(self.config)
         score = torch.nn.DataParallel(score)
-        score = init_net(score)
+        if self.config.training.zero_init:
+            score = init_net(score,'zero')
+            print('score zero initialized')
+
+
         optimizer = get_optimizer(self.config, score.parameters())
 
         start_epoch = 0
