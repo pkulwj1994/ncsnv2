@@ -147,7 +147,8 @@ class ScoreCorrectRunner():
 
                 optimizer.zero_grad()
                 loss.backward()
-                optimizer.step()
+                if step >0:
+                    optimizer.step()
 
                 if self.config.model.ema:
                     ema_helper.update(score)
