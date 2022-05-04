@@ -173,7 +173,7 @@ class ScoreCorrectRunner():
                     if self.config.model.ema:
                         states.append(ema_helper.state_dict())
 
-                    # torch.save(states, os.path.join(self.args.log_path, 'checkpoint_{}.pth'.format(step)))
+                    torch.save(states, os.path.join(self.args.log_path, 'checkpoint_{}.pth'.format(step)))
                     torch.save(states, os.path.join(self.args.log_path, 'checkpoint.pth'))
 
                     if self.config.training.snapshot_sampling:
@@ -191,7 +191,7 @@ class ScoreCorrectRunner():
                                                   device=self.config.device)
                         init_samples = data_transform(self.config, init_samples)
 
-                        all_samples = anneal_Langevin_caliberation(init_samples,basescore, test_score, sigmas.cpu().numpy(), self.config.training.lam,
+                        all_samples = anneal_Langevin_caliberation(init_samples,basescore, test_score, sigmas, self.config.training.lam,
                                                                self.config.sampling.n_steps_each,
                                                                self.config.sampling.step_lr,
                                                                final_only=False, verbose=True,
@@ -228,6 +228,18 @@ class ScoreCorrectRunner():
                         del all_samples
 
     def sample(self):
+
+        ## load base score
+        basescore = get_model(self.config)
+        basescore = torch.nn.DataParallel(basescore)
+        states = torch.load(os.path.join("exp/logs/cifar10", 'checkpoint_300000.pth'), map_location=self.config.device)
+        basescore.load_state_dict(states[0])
+        for p in basescore.parameters():
+            p.requires_grad_(False)
+        basescore.eval()
+        print(" base score loaded")
+
+
         if self.config.sampling.ckpt_id is None:
             states = torch.load(os.path.join(self.args.log_path, 'checkpoint.pth'), map_location=self.config.device)
         else:
@@ -360,11 +372,11 @@ class ScoreCorrectRunner():
                                               device=self.config.device)
                     init_samples = data_transform(self.config, init_samples)
 
-                all_samples = anneal_Langevin_dynamics(init_samples, score, sigmas,
-                                                       self.config.sampling.n_steps_each,
-                                                       self.config.sampling.step_lr, verbose=True,
-                                                       final_only=self.config.sampling.final_only,
-                                                       denoise=self.config.sampling.denoise)
+                all_samples = anneal_Langevin_caliberation(init_samples,basescore, score, sigmas, self.config.training.lam,
+                                                        self.config.sampling.n_steps_each,
+                                                        self.config.sampling.step_lr,
+                                                        final_only=False, verbose=True,
+                                                        denoise=self.config.sampling.denoise)
 
                 if not self.config.sampling.final_only:
                     for i, sample in tqdm.tqdm(enumerate(all_samples), total=len(all_samples),
@@ -416,10 +428,11 @@ class ScoreCorrectRunner():
                                          self.config.data.image_size, device=self.config.device)
                     samples = data_transform(self.config, samples)
 
-                all_samples = anneal_Langevin_dynamics(samples, score, sigmas,
-                                                       self.config.sampling.n_steps_each,
-                                                       self.config.sampling.step_lr, verbose=False,
-                                                       denoise=self.config.sampling.denoise)
+                all_samples = anneal_Langevin_caliberation(samples,basescore, score, sigmas.cpu().numpy(), self.config.training.lam,
+                                                        self.config.sampling.n_steps_each,
+                                                        self.config.sampling.step_lr,
+                                                        final_only=False, verbose=True,
+                                                        denoise=self.config.sampling.denoise)
 
                 samples = all_samples[-1]
                 for img in samples:
@@ -481,6 +494,18 @@ class ScoreCorrectRunner():
             ))
 
     def fast_fid(self):
+
+        ## load base score
+        basescore = get_model(self.config)
+        basescore = torch.nn.DataParallel(basescore)
+        states = torch.load(os.path.join("exp/logs/cifar10", 'checkpoint_300000.pth'), map_location=self.config.device)
+        basescore.load_state_dict(states[0])
+        for p in basescore.parameters():
+            p.requires_grad_(False)
+        basescore.eval()
+        print(" base score loaded")
+
+
         ### Test the fids of ensembled checkpoints.
         ### Shouldn't be used for models with ema
         if self.config.fast_fid.ensemble:
@@ -522,11 +547,12 @@ class ScoreCorrectRunner():
                                           device=self.config.device)
                 init_samples = data_transform(self.config, init_samples)
 
-                all_samples = anneal_Langevin_dynamics(init_samples, score, sigmas,
-                                                       self.config.fast_fid.n_steps_each,
-                                                       self.config.fast_fid.step_lr,
-                                                       verbose=self.config.fast_fid.verbose,
-                                                       denoise=self.config.sampling.denoise)
+                all_samples = anneal_Langevin_caliberation(init_samples,basescore, score, sigmas, self.config.training.lam,
+                                                        self.config.sampling.n_steps_each,
+                                                        self.config.sampling.step_lr,
+                                                        final_only=False, verbose=True,
+                                                        denoise=self.config.sampling.denoise)
+
 
                 final_samples = all_samples[-1]
                 for id, sample in enumerate(final_samples):
@@ -547,6 +573,18 @@ class ScoreCorrectRunner():
             pickle.dump(fids, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     def fast_ensemble_fid(self):
+
+        ## load base score
+        basescore = get_model(self.config)
+        basescore = torch.nn.DataParallel(basescore)
+        states = torch.load(os.path.join("exp/logs/cifar10", 'checkpoint_300000.pth'), map_location=self.config.device)
+        basescore.load_state_dict(states[0])
+        for p in basescore.parameters():
+            p.requires_grad_(False)
+        basescore.eval()
+        print(" base score loaded")
+
+
         from evaluation.fid_score import get_fid, get_fid_stats_path
         import pickle
 
@@ -582,11 +620,11 @@ class ScoreCorrectRunner():
                                           device=self.config.device)
                 init_samples = data_transform(self.config, init_samples)
 
-                all_samples = anneal_Langevin_dynamics(init_samples, scorenet, sigmas,
-                                                       self.config.fast_fid.n_steps_each,
-                                                       self.config.fast_fid.step_lr,
-                                                       verbose=self.config.fast_fid.verbose,
-                                                       denoise=self.config.sampling.denoise)
+                all_samples = anneal_Langevin_caliberation(init_samples,basescore, scorenet, sigmas, self.config.training.lam,
+                                                        self.config.sampling.n_steps_each,
+                                                        self.config.sampling.step_lr,
+                                                        final_only=False, verbose=True,
+                                                        denoise=self.config.sampling.denoise)
 
                 final_samples = all_samples[-1]
                 for id, sample in enumerate(final_samples):
